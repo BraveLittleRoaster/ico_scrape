@@ -26,9 +26,15 @@ CREATE TABLE IF NOT EXISTS investor_data (
   soc_personal_site TEXT,
   member_experience TEXT,
   member_location TEXT,
-  member_education TEXT,
   member_skills TEXT,
   member_investments TEXT,
   is_founder BOOLEAN DEFAULT FALSE, -- Tells us that this employee is listed as a founder.
       FOREIGN KEY (ico_name) REFERENCES ico_data(ico_name)
+);
+
+CREATE TABLE IF NOT EXISTS proxies (
+  proxy TEXT PRIMARY KEY NOT NULL,
+  proxy_type TEXT,
+  is_enabled INTEGER DEFAULT 1,
+  country TEXT
 );
