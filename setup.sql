@@ -36,5 +36,6 @@ CREATE TABLE IF NOT EXISTS proxies (
   proxy TEXT PRIMARY KEY NOT NULL,
   proxy_type TEXT,
   is_enabled INTEGER DEFAULT 1,
-  country TEXT
+  country TEXT,
+  proxy_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

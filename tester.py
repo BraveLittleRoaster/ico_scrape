@@ -41,6 +41,16 @@ def fetch_proxies():
 
 conn = sqlite3.connect('./ico_data.db')
 cur = conn.cursor()
-cur.execute("SELECT proxy, proxy_type FROM proxies WHERE is_enabled = 1 ORDER BY RANDOM();")
-row = cur.fetchone()
-print(row)
+cur.execute("SELECT member_name FROM investor_data;")
+rows = cur.fetchall()
+
+for row in rows:
+
+    name = row[0]
+    name = name.replace('\n', '')
+
+    cur.execute("UPDATE investor_data SET member_name = ? WHERE member_name = ?;", (name, row[0]))
+    conn.commit()
+
+conn.commit()
+conn.close()

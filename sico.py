@@ -7,7 +7,7 @@ from multiprocessing import Pool
 from multiprocessing import cpu_count
 from multiprocessing.dummy import Pool as DPool
 from functools import partial
-from tenacity import retry, wait_random, retry_if_exception_type, stop_after_attempt
+from tenacity import retry, wait_random, retry_if_exception_type, stop_after_attempt, after_log
 from selenium import webdriver
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
@@ -16,9 +16,16 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 import selenium.common.exceptions
 import socks
+import random
+import logging, coloredlogs
 
 
-class ScapeException(Exception):
+coloredlogs.install()
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)-8s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
+
+class ScrapeException(Exception):
 
     pass
 
@@ -38,14 +45,14 @@ class ScrapeIcoBench:
         conn.commit()
         conn.close()
 
-    @retry(wait=wait_random(15, 30), retry=retry_if_exception_type((requests.RequestException, ScapeException)))
+    @retry(wait=wait_random(15, 30), retry=retry_if_exception_type((requests.RequestException, ScrapeException)))
     def scrape_financials(self, ico_url):
 
         url = f"{ico_url}/financial"
         resp = requests.get(url, headers=self.headers)
         if resp.status_code == 503:
-            print("[!] Got a 503 Error. Waiting and retrying...")
-            raise ScapeException()
+            logger.warning("[!] Got a 503 Error. Waiting and retrying...")
+            raise ScrapeException()
         html = resp.content
         bs = BeautifulSoup(html, features="html5lib")
 
@@ -53,8 +60,8 @@ class ScrapeIcoBench:
 
         invest_info = bs.find("div", {"class": "box_right"})
         if invest_info is None:
-            print(f"[!] Could not find financial data at {ico_url}. Retrying.")
-            raise ScapeException()
+            logger.warning(f"[!] Could not find financial data at {ico_url}. Retrying.")
+            raise ScrapeException()
         rows = invest_info.find_all("div", {"class": "row"})
         if rows is not None:
             for row in rows:
@@ -66,29 +73,29 @@ class ScrapeIcoBench:
 
         return results
 
-    @retry(wait=wait_random(15, 30), retry=retry_if_exception_type((requests.RequestException, ScapeException)), stop=stop_after_attempt(20))
+    @retry(wait=wait_random(15, 30), retry=retry_if_exception_type((requests.RequestException, ScrapeException)), stop=stop_after_attempt(20))
     def scrape_description_url(self, ico_url):
 
         resp = requests.get(ico_url, headers=self.headers)
         if resp.status_code == 503:
-            print("[!] Got a 503 Error. Waiting and retrying...")
-            raise ScapeException()
+            logger.warning("[!] Got a 503 Error. Waiting and retrying...")
+            raise ScrapeException()
         html = resp.content
         bs = BeautifulSoup(html, features="html5lib")
         try:
             description = bs.find("div", {"id": "about"}).text
         except AttributeError:
-            print(f"[-] Couldn't find About section at {ico_url}. We are probably being rate limited. Retrying...")
-            raise ScapeException()
+            logger.warning(f"[-] Couldn't find About section at {ico_url}. We are probably being rate limited. Retrying...")
+            raise ScrapeException()
         try:
             link = bs.find("a", {"class": "button_big"}, href=True)['href']
         except (AttributeError, TypeError) as err:
-            print(f"[@] WARNING: Could not find a link for {ico_url}")
+            logger.warning(f"[@] WARNING: Could not find a link for {ico_url}")
             link = None
 
         return {"link": link, "description": description}
 
-    @retry(wait=wait_random(15, 30), retry=retry_if_exception_type((requests.RequestException, ScapeException)))
+    @retry(wait=wait_random(15, 30), retry=retry_if_exception_type((requests.RequestException, ScrapeException)))
     def scrape_team(self, ico_url):
 
         results = {}
@@ -97,18 +104,18 @@ class ScrapeIcoBench:
 
         resp = requests.get(url, headers=self.headers)
         if resp.status_code == 503:
-            print("[!] Got a 503 Error. Waiting and retrying...")
-            raise ScapeException
+            logger.warning("[!] Got a 503 Error. Waiting and retrying...")
+            raise ScrapeException
         html = resp.content
 
         bs = BeautifulSoup(html, features="html5lib")
 
         outer_container = bs.find("div", {"class": "tab_content"})
         if outer_container is None:
-            print(f"[!] Could not find the tab_content container in {ico_url}")
-            raise ScapeException # retry if we are being rate limited.
+            logger.warning(f"[!] Could not find the tab_content container in {ico_url}")
+            raise ScrapeException # retry if we are being rate limited.
         team_member = outer_container.find_all("div", {"class": "col_3"})
-        print(f"[-] Found {len(team_member)} team members for {ico_url}.")
+        logger.info(f"[+] Found {len(team_member)} team members for {ico_url}.")
         for member in team_member:
             soc_urls = []
             member_name = member.find("h3", {"class": "notranslate"}).text
@@ -122,29 +129,29 @@ class ScrapeIcoBench:
 
         return results
 
-    @retry(wait=wait_random(15, 30), retry=retry_if_exception_type(ScapeException))
+    @retry(wait=wait_random(15, 30), retry=retry_if_exception_type(ScrapeException))
     def scrape_icobench(self, page_num):
 
         ico_base_url = "https://icobench.com"
         url = f"https://icobench.com/icos?page={page_num}&filterSort=name-asc"
-        print(f"[-] Getting page number: {page_num}")
+        logger.info(f"[-] Getting page number: {page_num}")
 
         conn = sqlite3.connect(self.DB_FILE)
         cur = conn.cursor()
 
         resp = requests.get(url, headers=self.headers)
         if resp.status_code == 503:
-            print(f"[!] Got a 503 Error at page {page_num}. Waiting and retrying...")
-            raise ScapeException()
+            logger.warning(f"[!] Got a 503 Error at page {page_num}. Waiting and retrying...")
+            raise ScrapeException()
         html = resp.content
         bs = BeautifulSoup(html, features="html5lib")
 
         table = bs.find("div", {"class": "ico_list"})
         if table is None:
-            print(f"[!] ERROR with {page_num}. Couldn't find ICOs.")
-            raise ScapeException(f"[!] No table object found for {page_num}. Retrying...")
+            logger.warning(f"[!] ERROR with {page_num}. Couldn't find ICOs.")
+            raise ScrapeException(f"[!] No table object found for {page_num}. Retrying...")
         table_rows = table.find_all("td", {"class": "ico_data"})
-        print(f"[-] Found {len(table_rows)} total ICOs on page {page_num}.")
+        logger.info(f"[-] Found {len(table_rows)} total ICOs on page {page_num}.")
         for row in table_rows:
 
             attrs = row.find("p", {"class": "notranslate"})
@@ -165,25 +172,26 @@ class ScrapeIcoBench:
                 ico_name = ico_name.replace('(PreICO)', '')
                 ico_name = ico_name.replace('\xa0', '')
                 ico_name = ico_name.replace(' ', '')
-                print(f"[+] Found Pre-ICO: {ico_name}")
+                logger.debug(f"[+] Found Pre-ICO: {ico_name}")
             else:
                 # Strip the bad chars and whitespace out.
                 ico_name = ico_name.replace('\xa0', '')
                 ico_name = ico_name.replace(' ', '')
-                print(f"[+] Found ICO: {ico_name}")
+                logger.debug(f"[+] Found ICO: {ico_name}")
 
             is_in_db = cur.execute("SELECT * FROM ico_data WHERE ico_name=?;", (ico_name,))
             if is_in_db.fetchall():
                 # This check lets us avoid sending unnecessary requests to avoid rate limiting.
-                print(f"[-] Already have data for {ico_name}. Ignoring.")
-
-            else:
+                #logger.info(f"[-] Already have data for {ico_name}. Ignoring.")
+                pass
+            ignore_check = True
+            if ignore_check:
 
                 description_url = self.scrape_description_url(ico_url) # Get a link to the URL and some basic info about the ICO
                 team_members = self.scrape_team(ico_url) # Get all the team members and their social media profiles.
                 fin_results = self.scrape_financials(ico_url) # Get the financial data.
                 try:
-                    print(f"[-] Inserting data for {ico_name}.")
+                    logger.debug(f"[-] Inserting data for {ico_name}.")
                     cur.execute(f"INSERT INTO ico_data (ico_name, description, ico_url, ico_team, pre_ico, financials, "
                                 f"countries) VALUES (?,?,?,?,?,?,?);", (ico_name,
                                                                         description_url.get('description'),
@@ -194,13 +202,13 @@ class ScrapeIcoBench:
                                                                         countries_list))
 
                 except sqlite3.IntegrityError as err:
-                    print(f"[/] Already have data for {ico_name}. Ignoring.") # The check should avoid this.
+                    logger.debug(f"[/] Already have data for {ico_name}. Ignoring.") # The check should avoid this.
                     pass # ignore if the ICO is already in the Database.
                 except (sqlite3.DatabaseError, sqlite3.ProgrammingError, sqlite3.InterfaceError) as err:
-                    print(f"[!] BAD SQL WHEN PROCESSING: {ico_name}. ERROR: {err}")
-                    print(f"\tHere is the SQL:\n1. {ico_name}\n2. {description_url.get('description')}\n"
-                          f"3. {description_url.get('link')}\n4. {json.dumps(team_members)}\n\t"
-                          f"4a. {type(json.dumps(team_members))}\n5. {pre_ico}")
+                    logger.error(f"[!] BAD SQL WHEN PROCESSING: {ico_name}. ERROR: {err}")
+                    logger.error(f"\tHere is the SQL:\n1. {ico_name}\n2. {description_url.get('description')}\n"
+                                 f"3. {description_url.get('link')}\n4. {json.dumps(team_members)}\n\t"
+                                 f"4a. {type(json.dumps(team_members))}\n5. {pre_ico}")
 
                 conn.commit()
 
@@ -212,14 +220,14 @@ class SeleniumScrapeAngel:
 
     def __init__(self, mode=0):
 
-        print("[^] Spawning session...")
+        logger.info("[^] Spawning session...")
 
         self.driver = webdriver.Firefox()
         self.wait = WebDriverWait(self.driver, 10)
         self.s_login()
 
         # initialize and setup the database.
-        print("[^] Initializing Database...")
+        logger.info("[^] Initializing Database...")
         self.DB_PATH = "./ico_data.db"
         with open('./setup.sql', 'r') as f:
             setup_sql = f.read()
@@ -281,10 +289,9 @@ class SeleniumScrapeAngel:
         urls = self.fuzz_urls(ico_name)
         results_list = []
         for url in urls:
-            print(f"[-] Searching {url} ...")
+            logger.info(f"[-] Searching {url} ...")
             self.driver.get(url)
             if self.driver.current_url == url:
-                #print("[+] We are at the right url")
                 bs = BeautifulSoup(self.driver.page_source, features="html5lib")
                 profile_pic = bs.find("img", {"class": "js-avatar-img"})
                 error_status = bs.find("p", {"class": "g-helvetica_ultra u-fontSize36 u-colorMuted"})
@@ -294,14 +301,14 @@ class SeleniumScrapeAngel:
                 else:
                     if error_status:
                         if "404" in error_status.text:
-                            print("[-] Ignoring 404...")
+                            logger.debug("[-] Ignoring 404...")
                         else:
                             try:
                                 self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "group")))
                                 result = self.s_scrape_comapny_parser(self.driver.page_source, ico_name)
                                 results_list.append(result)
                             except selenium.common.exceptions.TimeoutException:
-                                print("[@] Could have hit a profile...")
+                                logger.debug("[@] Could have hit a profile...")
                     else:
                         self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "group")))
                         result = self.s_scrape_comapny_parser(self.driver.page_source, ico_name)
@@ -313,14 +320,14 @@ class SeleniumScrapeAngel:
 
     def s_scrape_comapny_parser(self, html, ico_name):
 
-        print("[-] Recieved page source. Parsing... ")
+        logger.info("[-] Recieved page source. Parsing... ")
 
         personnel_urls = []
 
         bs = BeautifulSoup(html, features="html5lib")
         if "https://angel.co/captcha?" in str(html):
-            print(f"[!] CAPTCHA detected when searching {ico_name}")
-            raise ScapeException()
+            logger.warning(f"[!] CAPTCHA detected when searching {ico_name}")
+            raise ScrapeException()
 
         founders = bs.find("div", {"class": "founders section"})
         investors = bs.find("div", {"class": "past_financing section"})
@@ -331,7 +338,7 @@ class SeleniumScrapeAngel:
             past_founders = founders.find_all("div", {"data-role": "past_founder"})
 
             if current_founders:
-                print(f"[-] Got founders at {ico_name}")
+                logger.debug(f"[-] Got founders at {ico_name}")
                 for founder in current_founders:
                     try:
                         personnel_url = founder.find("a", {"class": "profile-link"}, href=True)['href']
@@ -339,7 +346,7 @@ class SeleniumScrapeAngel:
                     except TypeError:
                         pass  # Sometimes this class renders hidden with no elements.
             if past_founders:
-                print(f"[-] Got past founders at {ico_name}")
+                logger.debug(f"[-] Got past founders at {ico_name}")
                 for founder in past_founders:
                     try:
                         personnel_url = founder.find("a", {"class": "profile-link"}, href=True)['href']
@@ -347,7 +354,7 @@ class SeleniumScrapeAngel:
                     except TypeError:
                         pass  # Sometimes this class renders hidden with no elements.
         if investors:
-            print(f"[-] Got investors at {ico_name}")
+            logger.debug(f"[-] Got investors at {ico_name}")
             for investor in investors:
                 try:
                     personnel_url = investor.find("a", {"class": "profile-link"}, href=True)['href']
@@ -355,7 +362,7 @@ class SeleniumScrapeAngel:
                 except TypeError:
                     pass  # Sometimes this class renders hidden with no elements.
         if team_members:
-            print(f"[-] Got team members at {ico_name}")
+            logger.debug(f"[-] Got team members at {ico_name}")
             for team_member in team_members:
                 try:
                     personnel_url = team_member.find("a", {"class": "profile-link"}, href=True)['href']
@@ -364,7 +371,7 @@ class SeleniumScrapeAngel:
                     pass # Sometimes this class renders hidden with no elements.
 
 
-        print(f"[+] Found {len(personnel_urls)} profiles.")
+        logger.info(f"[+] Found {len(personnel_urls)} profiles.")
         return personnel_urls
 
     def s_scrape_person(self, return_list, ico_name):
@@ -376,7 +383,7 @@ class SeleniumScrapeAngel:
                 html = self.driver.page_source
 
                 result = self.s_scrape_person_parser(ico_name=ico_name, member_info=url, html=html)
-        print(f"[*] Finished with {ico_name}")
+        logger.info(f"[*] Finished with {ico_name}")
 
     def s_scrape_person_parser(self, ico_name, member_info, html):
 
@@ -389,8 +396,8 @@ class SeleniumScrapeAngel:
 
         captcha_detect = bs.find("textarea", {"id": "g-recaptcha-response"})
         if captcha_detect:
-            print(f"[!] Detected CAPTCHA for {member_url}. Retrying...")
-            raise ScapeException()
+            logger.warning(f"[!] Detected CAPTCHA for {member_url}. Retrying...")
+            raise ScrapeException()
 
         tags = bs.find("div", {"class": "subheader-tags"})
         socials = bs.find("div", {"class": "darkest dps64 profiles-show fls45 links _a _jm"})
@@ -398,21 +405,25 @@ class SeleniumScrapeAngel:
         try:
             name = bs.find("h1", {"class": "u-fontSize25 u-fontSize24SmOnly u-fontWeight500"}).text
         except AttributeError as err:
-            print(f'[!] Error: {err}\nCouldnt find name for some reason. Search: {html}')
-            raise ScapeException()
+            try:
+                name = bs.find("h1", {"class": "u-fontSize32 u-fontSize24SmOnly u-fontWeight500 s-vgBottom0_5"}).text
+            except AttributeError as err:
+                logger.warning("[!] Could not find name for some reason. Retrying...")
+                raise ScrapeException()
         if name is None:
-            print(f"[!] Couldn't find member name. Retrying...")
-            raise ScapeException()
+            logger.warning(f"[!] Couldn't find member name. Retrying...")
+            raise ScrapeException()
         # Strip junk chars out of the name field.
-        name = name.lstrip('\n')
         name = name.replace('\n\n\nReport this profile\n\n\n\n', '')
+        name = name.replace('\n', '')
+        name = name.replace('\r\n', '')
 
         profile_pic_url = bs.find("img", {"class": "js-avatar-img"})['src'] # Get the URL of the profile pic.
         experience = bs.find("div", {"class": "experience s-grid0"})
         #education = bs.find("div", {"class": "education s-grid0"})
         about = bs.find("div", {"class": "about s-grid0"})
         user_id_number = bs.find("div", {"class": "dps64 profiles-show fhr17 header _a _jm"})['data-user_id']
-        print(f"[+] Got a user number: {user_id_number}")
+        logger.warning(f"[+] Got a user number: {user_id_number}")
         investments = bs.find("div", {"class": "investments s-grid0"})
 
         if profile_pic_url:
@@ -422,11 +433,11 @@ class SeleniumScrapeAngel:
                 r.raw.decode_content = True
                 profile_pic = sqlite3.Binary(r.content) # store the binary image
                 if profile_pic is None:
-                    print("[@] WARNING: Unable to download profile pic...")
+                    logger.warning("[@] WARNING: Unable to download profile pic...")
             else:
-                print(f"[-] Encountered a non-200 status code at {member_url}. Retrying...")
+                logger.warning(f"[-] Encountered a non-200 status code at {member_url}. Retrying...")
                 profile_pic = None
-                raise ScapeException()
+                raise ScrapeException()
             r.close()
         else:
             profile_pic = None
@@ -455,13 +466,12 @@ class SeleniumScrapeAngel:
 
             member_tags = "|".join(member_tags)
             if location is None:
-                print(f"[@] WARNING: Could not find a location for {member_url}. Check logs.")
+                logger.warning(f"[@] WARNING: Could not find a location for {member_url}. Check logs.")
         else:
             location = None
             member_tags = []
 
         if socials:
-            #print("[-] Found Socials.")
             # Parse the social media profiles out of the spans.
             try:
                 linkedin_url = socials.find("a", {"data-field": "linkedin_url"}, href=True)['href']
@@ -515,7 +525,6 @@ class SeleniumScrapeAngel:
             member_title = None
 
         if about:
-            #print("[-] Got About section.")
             skills = about.find("div", {"data-field": "tags_skills"})
             if skills:
                 member_skills = []
@@ -528,7 +537,7 @@ class SeleniumScrapeAngel:
             member_skills = None
 
         if investments:
-            print(f"[+] Found investments for {user_id_number}.")
+            logger.info(f"[+] Found investments for {user_id_number}.")
             investment_api_url = f"https://angel.co/startup_roles/investments?user_id={user_id_number}"
             req = self.s.get(investment_api_url, headers=self.headers)
             if req.status_code == 200:
@@ -536,7 +545,7 @@ class SeleniumScrapeAngel:
                 member_investments = json.loads(req.content)
                 member_investments = json.dumps(member_investments)
             else:
-                print(f"[@] WARNING: Could not get investments for {member_url}")
+                logger.warning(f"[@] WARNING: Could not get investments for {member_url}")
                 member_investments = None
         else:
             member_investments = None
@@ -567,7 +576,7 @@ class SeleniumScrapeAngel:
                         founder_flag))
 
         except sqlite3.IntegrityError as err:
-            print("[-] Already have data for this member.")
+            logger.info("[-] Already have data for this member.")
 
         conn.commit()
         conn.close()
@@ -576,14 +585,14 @@ class SeleniumScrapeAngel:
 
 class ScrapeAngel:
 
-    def __init__(self, mode=0):
+    def __init__(self):
 
-        print("[^] Spawning session...")
+        logger.info("[^] Spawning session...")
         self.headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
                                       " Chrome/71.0.3578.98 Safari/537.36"}
 
         # initialize and setup the database.
-        print("[^] Initializing Database...")
+        logger.info("[^] Initializing Database...")
         self.DB_PATH = "./ico_data.db"
         with open('./setup.sql', 'r') as f:
             setup_sql = f.read()
@@ -595,28 +604,46 @@ class ScrapeAngel:
 
     def fetch_proxies(self):
 
+        logger.info("[+] Fetching fresh proxies...")
         proxy_uname = "robert.paul6@gmail.com"
         proxy_pass = "rYH14XxbN7fmJdagXasE"
-        proxy_api = f"http://list.didsoft.com/get?email={proxy_uname}&pass={proxy_pass}&pid=sockspremium&version=socks4"
+        proxy_api = f"http://list.didsoft.com/get?email={proxy_uname}&pass={proxy_pass}&pid=sockspremium"
 
         conn = sqlite3.connect(self.DB_PATH)
         cur = conn.cursor()
 
-        req = self.s.get(proxy_api)
+        req = requests.get(proxy_api)
 
         with open('./proxy.cache', 'wb') as f:
             f.write(req.content)
 
         with open('./proxy.cache', 'r') as f:
             proxies = f.readlines()
-
+        logger.info(f"[+] Found {len(proxies)} proxies. Updating proxy database.")
         for proxy in proxies:
             prox = proxy.split("#")
             try:
                 cur.execute('INSERT INTO proxies (proxy, proxy_type, country) VALUES (?,?,?);', (prox[0], prox[1], prox[2].rstrip('\n')))
                 conn.commit()
             except sqlite3.IntegrityError:
-                print(f"[-] Already have proxy {prox[0]} added.")
+                logger.debug(f"[-] Already have proxy {prox[0]} added.")
+
+        logger.debug("[-] Done updating proxies.")
+        conn.commit()
+        conn.close()
+
+    def reset_proxies(self):
+        #resets all proxies to enabled.
+        conn = sqlite3.connect(self.DB_PATH)
+        cur = conn.cursor()
+
+        cur.execute("SELECT proxy FROM proxies WHERE is_enabled = 0;")
+        rows = cur.fetchall()
+        for row in rows:
+            proxy = row[0]
+
+            cur.execute("UPDATE proxies SET is_enabled = 1 WHERE proxy = ?;", (proxy,))
+            conn.commit()
 
         conn.commit()
         conn.close()
@@ -630,12 +657,18 @@ class ScrapeAngel:
         conn.commit()
         conn.close()
 
+    @retry(retry=retry_if_exception_type(ScrapeException))
     def rand_proxy(self):
 
         conn = sqlite3.connect(self.DB_PATH)
         cur = conn.cursor()
+        #countries = ["US", "CA", "MX", "UK", "DE"]
+        #random_country = countries[random.randint(0, len(countries))]
+        #cur.execute("SELECT proxy, proxy_type FROM proxies WHERE is_enabled = 1 AND country=? ORDER BY RANDOM();", (random_country,))
         cur.execute("SELECT proxy, proxy_type FROM proxies WHERE is_enabled = 1 ORDER BY RANDOM();")
         row = cur.fetchone()
+        if row is None:
+            raise ScrapeException() # Retry
         conn.close()
 
         return row
@@ -643,14 +676,15 @@ class ScrapeAngel:
     def login(self):
         # Helps us avoid captchas.
         login_url = "https://angel.co/login"
-        req = self.s.get(login_url)
+        s = requests.Session()
+        req = s.get(login_url)
         html = req.content
         bs = BeautifulSoup(html, features="html5lib")
         try:
             csrf_token = bs.find("meta", {"name": "csrf-token"})['content']
         except AttributeError as e:
-            print("[!] ERROR! Could not find csrf token!")
-            raise ScapeException()
+            logger.error("[!] ERROR! Could not find csrf token!")
+            raise ScrapeException()
 
         post_params = {
             "utf8": "✓",
@@ -661,12 +695,14 @@ class ScrapeAngel:
         }
 
         headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-        p_req = self.s.post(login_url, data=post_params, headers=headers)
+        p_req = s.post(login_url, data=post_params, headers=headers)
         if p_req.url == "https://angel.co/":
-            print("[+] Login Successful.")
+            logger.info("[+] Login Successful.")
         else:
-            print(f"[!] Possible login issue:\n{req.url}\n{req.status_code}\n{req.content.decode('utf8')}")
+            logger.error(f"[!] Possible login issue:\n{req.url}\n{req.status_code}\n{req.content.decode('utf8')}")
             exit()
+
+        return s
 
     def fuzz_urls(self, ico_name):
 
@@ -694,7 +730,7 @@ class ScrapeAngel:
 
         return urls
 
-    @retry(wait=wait_random(15, 30), retry=retry_if_exception_type(ScapeException))
+    @retry(wait=wait_random(15, 30), retry=retry_if_exception_type(ScrapeException), stop=stop_after_attempt(10), after=after_log(logger, logging.DEBUG))
     def scrape_person(self, ico_name, session, member_info):
 
         member_url = member_info.get('url')
@@ -704,32 +740,42 @@ class ScrapeAngel:
         try:
             req = session.get(url=member_url)
         except (requests.exceptions.ConnectionError, socks.GeneralProxyError):
-            print("[!] Error with proxy. Removing from pool before retrying.")
+            logger.error(f"[!] Error with proxy at {member_url}. Removing from pool before retrying.")
             # First update the session to use a new proxy before retrying.
+            current_proxy = session.proxies.get('http').split("//")
+            self.update_proxy(proxy=current_proxy[1], state=0)  # remove the proxy from the pool before retrying.
             rand_proxy = self.rand_proxy()
             session.proxies.update({'http': f'{rand_proxy[1]}://{rand_proxy[0]}',
                                     'https': f'{rand_proxy[1]}://{rand_proxy[0]}'})
-            raise ScapeException()
+            raise ScrapeException()
         if req.status_code == 503:
-            print("[!] We are being rate limited. Retrying...")
-            raise ScapeException()
+            logger.warning("[!] We are being rate limited. Retrying...")
+            raise ScrapeException()
         elif req.status_code != 200:
-            print(f"[!] Non 200 status code for {member_info}")
-            raise ScapeException()
+            logger.warning(f"[!] {req.status_code} status code for {member_url}. Removing proxy and retrying")
+            current_proxy = session.proxies.get('http').split("//")
+            self.update_proxy(proxy=current_proxy[1], state=0)  # remove the proxy from the pool before retrying.
+            rand_proxy = self.rand_proxy()
+            session.proxies.update({'http': f'{rand_proxy[1]}://{rand_proxy[0]}',
+                                    'https': f'{rand_proxy[1]}://{rand_proxy[0]}'})
 
-        print(f"[^] Parsing member information at {member_url}")
+            session.cookies.clear()
+            raise ScrapeException()
+
+        logger.debug(f"[^] Parsing member information at {member_url}")
         html = req.content
-        #print(req.content.decode('utf-8'))
+
         bs = BeautifulSoup(html, features="html5lib")
 
         captcha_detect = bs.find("textarea", {"id": "g-recaptcha-response"})
         if captcha_detect:
-            print(f"[!] Detected CAPTCHA for {member_url}. Retrying...")
+            logger.warning(f"[!] Detected CAPTCHA for {member_url}. Retrying...")
             # First update the session to use a new proxy before retrying.
             rand_proxy = self.rand_proxy()
             session.proxies.update({'http': f'{rand_proxy[1]}://{rand_proxy[0]}',
                                     'https': f'{rand_proxy[1]}://{rand_proxy[0]}'})
-            raise ScapeException()
+            session.cookies.clear()
+            raise ScrapeException()
 
         tags = bs.find("div", {"class": "subheader-tags"})
         socials = bs.find("div", {"class": "darkest dps64 profiles-show fls45 links _a _jm"})
@@ -737,14 +783,35 @@ class ScrapeAngel:
         try:
             name = bs.find("h1", {"class": "u-fontSize25 u-fontSize24SmOnly u-fontWeight500"}).text
         except AttributeError as err:
-            print(f'[!] Error: {err}\nCouldnt find name for some reason. Search: {req.content.decode("utf8")}')
-            raise ScapeException()
+            try:
+                name = bs.find("h1", {"class": "u-fontSize32 u-fontSize24SmOnly u-fontWeight500 s-vgBottom0_5"}).text
+            except AttributeError as err:
+                logger.warning(f"[!] Couldn't find name at {member_url}, running checks.")
+                detect_ipban = bs.find("h3", {"class": "s-h3"})
+
+                if detect_ipban:
+                    if detect_ipban.text == "Your IP address has been temporarily blocked for security reasons.":
+                        logger.warning(f"[!] Proxy IP banned detected when scraping {member_url}.")
+                        current_proxy = session.proxies.get('http').split("//")
+                        self.update_proxy(proxy=current_proxy[1],
+                                          state=0)  # remove the proxy from the pool before retrying.
+                        session.cookies.clear()
+                        raise ScrapeException()
+                raise ScrapeException()
         if name is None:
-            print(f"[!] Couldn't find member name. Retrying...")
-            raise ScapeException()
-        profile_pic_url = bs.find("img", {"class": "js-avatar-img"})['src'] # Get the URL of the profile pic.
+            logger.warning(f"[!] Couldn't find member name at {member_url}. Retrying...")
+            raise ScrapeException()
+
+        name = name.replace('\n\n\nReport this profile\n\n\n\n', '')
+        name = name.replace('\n', '')
+        name = name.replace('\r\n', '')
+
+        try:
+            profile_pic_url = bs.find("img", {"class": "js-avatar-img"})['src'] # Get the URL of the profile pic.
+        except AttributeError:
+            logger.warning(f"[@] WARNING: Can't get profile pic URL for {member_url}")
         experience = bs.find("div", {"class": "experience s-grid0"})
-        education = bs.find("div", {"class": "education s-grid0"})
+        #education = bs.find("div", {"class": "education s-grid0"}) # Unused. This tends to be dynamically generated and redundant anyways.
         about = bs.find("div", {"class": "about s-grid0"})
         try:
             user_id_number = bs.find("div", {"class": "dps64 profiles-show fhr17 header _a _jm"})['data-user_id']
@@ -753,8 +820,9 @@ class ScrapeAngel:
             rand_proxy = self.rand_proxy()
             session.proxies.update({'http': f'{rand_proxy[1]}://{rand_proxy[0]}',
                                     'https': f'{rand_proxy[1]}://{rand_proxy[0]}'})
-            raise ScapeException()
-        print(f"[+] Got a user number: {user_id_number}")
+            session.cookies.clear()
+            raise ScrapeException()
+        logger.debug(f"[+] Got a user number: {user_id_number}")
         investments = bs.find("div", {"class": "investments s-grid0"})
 
         if profile_pic_url:
@@ -764,11 +832,15 @@ class ScrapeAngel:
                 r.raw.decode_content = True
                 profile_pic = sqlite3.Binary(r.content) # store the binary image
                 if profile_pic is None:
-                    print("[@] WARNING: Unable to download profile pic...")
+                    logger.warning("[@] WARNING: Unable to download profile pic...")
+            elif r.status_code == 302:
+                r.raw.decode_content = True
+                profile_pic = sqlite3.Binary(r.content) # store the binary image
+                if profile_pic is None:
+                    logger.warning("[@] WARNING: Unable to download profile pic...")
             else:
-                print(f"[-] Encountered a non-200 status code at {member_url}. Retrying...")
+                logger.error(f"[-] Encountered a non-handled status code ({req.status_code}) at {member_url}. Skipping profile pic download...")
                 profile_pic = None
-                raise ScapeException()
             r.close()
         else:
             profile_pic = None
@@ -797,13 +869,12 @@ class ScrapeAngel:
 
             member_tags = "|".join(member_tags)
             if location is None:
-                print(f"[@] WARNING: Could not find a location for {member_url}. Check logs.")
+                logger.warning(f"[@] WARNING: Could not find a location for {member_url}. Check logs.")
         else:
             location = None
             member_tags = []
 
         if socials:
-            #print("[-] Found Socials.")
             # Parse the social media profiles out of the spans.
             try:
                 linkedin_url = socials.find("a", {"data-field": "linkedin_url"}, href=True)['href']
@@ -857,7 +928,6 @@ class ScrapeAngel:
             member_title = None
 
         if about:
-            #print("[-] Got About section.")
             skills = about.find("div", {"data-field": "tags_skills"})
             if skills:
                 member_skills = []
@@ -870,7 +940,7 @@ class ScrapeAngel:
             member_skills = None
 
         if investments:
-            print(f"[+] Found investments for {user_id_number}.")
+            logger.debug(f"[+] Found investments for {user_id_number}.")
             investment_api_url = f"https://angel.co/startup_roles/investments?user_id={user_id_number}"
             req = session.get(investment_api_url)
             if req.status_code == 200:
@@ -878,7 +948,7 @@ class ScrapeAngel:
                 member_investments = json.loads(req.content)
                 member_investments = json.dumps(member_investments)
             else:
-                print(f"[@] WARNING: Could not get investments for {member_url}")
+                logger.warning(f"[@] WARNING: Could not get detected investments for {member_url}")
                 member_investments = None
         else:
             member_investments = None
@@ -909,14 +979,14 @@ class ScrapeAngel:
                         founder_flag))
 
         except sqlite3.IntegrityError as err:
-            print("[-] Already have data for this member.")
+            logger.info(f"[-] Already have data for this member: {name}")
 
         conn.commit()
         conn.close()
 
         return True
 
-    @retry(wait=wait_random(15, 30), retry=retry_if_exception_type(ScapeException))
+    @retry(wait=wait_random(15, 30), retry=retry_if_exception_type(ScrapeException), after=after_log(logger, logging.DEBUG))
     def scrape_company(self, ico_name):
 
         # Fuzz urls for better accuracy.
@@ -924,38 +994,53 @@ class ScrapeAngel:
         s = requests.Session()
         s.headers.update(self.headers)
         rand_proxy = self.rand_proxy()
-
         s.proxies.update({'http': f'{rand_proxy[1]}://{rand_proxy[0]}',
                           'https': f'{rand_proxy[1]}://{rand_proxy[0]}'})
 
         urls = self.fuzz_urls(ico_name)
         personnel_urls = []
-        print(f"Trying with URLS: {urls}")
+        logger.debug(f"[^] Scraping information for {ico_name}.")
         for url in urls:
-            print(f"[^] Trying {url} ...")
             try:
                 req = s.get(url, allow_redirects=False) # We need to detect redirects.
             except (requests.exceptions.ConnectionError, socks.GeneralProxyError):
-                print("[!] Error with proxy, removing from the pool and retrying.")
+                logger.error(f"[!] Error with proxy at {url}, removing from the pool and retrying.")
                 self.update_proxy(proxy=rand_proxy[1], state=0)  # remove the proxy from the pool before retrying.
-                raise ScapeException()
+                raise ScrapeException()
             if req.status_code == 404:
-                print(f"[-] No ICO found at {url}")
+                logger.debug(f"[-] No ICO found at {url}")
                 pass # ignore 404s.
             elif req.status_code == 503:
-                print("[!] We are being rate limited. Retrying...")
-                raise ScapeException()
+                logger.warning(f"[!] We are being rate limited at {url}. Retrying...")
+                raise ScrapeException()
             elif req.status_code == 301:
-                print("[@] We got redirected. Ignoring...")
+                logger.debug(f"[@] We got redirected when accessing {url}. Ignoring...")
                 pass
             else:
                 html = req.content
                 bs = BeautifulSoup(html, features="html5lib")
                 if "https://angel.co/captcha?" in str(html):
-                    print(f"[!] CAPTCHA detected when searching {ico_name}")
+                    logger.warning(f"[!] CAPTCHA detected when searching {ico_name}")
                     self.update_proxy(proxy=rand_proxy[1], state=0) # remove the proxy from the pool before retrying.
-                    raise ScapeException()
+                    s.cookies.clear()
+                    raise ScrapeException()
+                detect_notfound = bs.find("p", {"class": "g-helvetica_ultra u-fontSize36 u-colorMuted"})
+                detect_ipban = bs.find("h3", {"class": "s-h3"})
 
+                if detect_ipban:
+                    if detect_ipban.text == "Your IP address has been temporarily blocked for security reasons.":
+                        logger.error(f"[!] Proxy is IP banned when accessing {url}. Retrying after recycling proxy.")
+                        self.update_proxy(proxy=rand_proxy[1],
+                                          state=0)  # remove the proxy from the pool before retrying.
+                        s.cookies.clear()
+                        raise ScrapeException()
+
+                if detect_notfound:
+                    logger.debug(f"[!] GOT DETECT 404: {detect_notfound}")
+                    logger.debug(repr(detect_notfound.text))
+                    if "404" in detect_notfound.text:
+                        logger.debug(f"[-] Got 404 for {ico_name}")
+                        return False
                 founders = bs.find("div", {"class": "founders section"})
                 investors = bs.find("div", {"class": "past_financing section"})
                 team_members = bs.find("div", {"class": "section team"})
@@ -965,31 +1050,46 @@ class ScrapeAngel:
                     past_founders = founders.find_all("div", {"data-role": "past_founder"})
 
                     if current_founders:
-                        print(f"[-] Got founders at {url}")
                         for founder in current_founders:
-                            personnel_url = founder.find("a", {"class": "profile-link"}, href=True)['href']
-                            print(personnel_url)
+                            try:
+                                personnel_url = founder.find("a", {"class": "profile-link"}, href=True)['href']
+                            except AttributeError as err:
+                                logger.error(f"[!] Error with getting investor URL for {ico_name}. {err}")
                             personnel_urls.append({'url': personnel_url, 'founder_flag': True})
                     if past_founders:
-                        print(f"[-] Got past founders at {url}")
+                        logger.debug(f"[-] Got past founders at {url}")
                         for founder in past_founders:
-                            personnel_url = founder.find("a", {"class": "profile-link"}, href=True)['href']
+                            try:
+                                personnel_url = founder.find("a", {"class": "profile-link"}, href=True)['href']
+                            except AttributeError as err:
+                                logger.error(f"[!] Error with getting past founder URL for {ico_name}. {err}")
                             personnel_urls.append({'url': personnel_url, 'founder_flag': True})
 
                 if investors:
-                    print(f"[-] Got investors at {url}")
                     for investor in investors:
-                        personnel_url = investor.find("a", {"class": "profile-link"}, href=True)['href']
+                        try:
+                            personnel_url = investor.find("a", {"class": "profile-link"}, href=True)['href']
+                        except AttributeError as err:
+                            logger.error(f"[!] Error with getting investor URL for {ico_name}. {err}")
                         personnel_urls.append({'url': personnel_url, 'founder_flag': False})
                 if team_members:
-                    print(f"[-] Got team members at {url}")
                     for team_member in team_members:
-                        personnel_url = team_member.find("a", {"class": "profile-link"}, href=True)['href']
+                        try:
+                            personnel_url = team_member.find("a", {"class": "profile-link"}, href=True)['href']
+                        except AttributeError as err:
+                            logger.error(f"[!] Error with getting team member URL for {ico_name}. {err}")
                         personnel_urls.append({'url': personnel_url, 'founder_flag': False})
 
-                print(f"[+] Found {len(personnel_urls)} profiles.")
-                for personnel_url in personnel_urls:
-                    self.scrape_person(ico_name=ico_name, session=s, member_info=personnel_url)
+        if len(personnel_urls) > 0:
+            logger.info(f"[+] Found {len(personnel_urls)} profiles for {ico_name}.")
+            pd = DPool()
+            func = partial(self.scrape_person, ico_name, s)
+            pd.map(func, personnel_urls)
+#        for personnel_url in personnel_urls:
+#            self.scrape_person(ico_name=ico_name, session=s, member_info=personnel_url)
+
+        logger.info(f"[+] Done with {ico_name}.")
+        return True
 
 # Create a function called "chunks" with two arguments, l and n:
 def chunks(l, n):
@@ -1003,7 +1103,8 @@ if __name__ == "__main__":
 
     #sico = ScrapeIcoBench()
     sico = ScrapeAngel()
-    p = Pool()
+    sico.fetch_proxies()
+    p = Pool(processes=1000)
 
     conn = sqlite3.connect('./ico_data.db')
     cur = conn.cursor()
@@ -1012,12 +1113,14 @@ if __name__ == "__main__":
     icos = []
     for row in rows:
         icos.append(row[0])
-
     #cpu_chunk = len(rows) / cpu_count() - 1
     #cpu_chunk = int(cpu_chunk)
     #for row in chunks(rows, cpu_chunk):
     #    print(row)
 
-    #p.map(sico.scrape_company, icos)
-    for ico in icos:
-        sico.scrape_company(ico_name=ico)
+    p.map(sico.scrape_company, icos)
+    p.join()
+    p.close()
+    #for ico in icos:
+    #    sico.scrape_company(ico_name=ico)
+    #sico.scrape_company('dadi')
