@@ -19,7 +19,7 @@ from aiohttp_socks import SocksConnector, SocksVer
 import urllib3
 
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # suppress urllib insecure warnings.
+#urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # suppress urllib insecure warnings.
 logger = logging.getLogger(__name__)
 coloredlogs.install(level=logging.DEBUG)
 logger.debug("Test debug message.")
@@ -40,8 +40,8 @@ class MetroSexual(object):
         self.csrf_url = "https://205.216.27.79/common/metropcs_common.js"
 
         self.path = path
-        #manager = mp.Manager()
-        #self.shared_list = manager.list() # Store times taken for chunks. Lets us get overall average speed
+        manager = mp.Manager()
+        self.shared_list = manager.list() # Store times taken for chunks. Lets us get overall average speed
 
         self.headers = {"User-Agent": self.random_ua(),
                         "Host": "www.metropcs.com",
@@ -302,7 +302,7 @@ class MetroSexual(object):
                 if chunkEnd > fileEnd:
                     break
 
-    @retry(retry_if_exception_type(RetryException))
+    @retry(retry=retry_if_exception_type(RetryException))
     async def fetch(self, url, session, proxy):
         try:
             async with session.get(url) as response:
@@ -315,7 +315,7 @@ class MetroSexual(object):
             self.update_proxy(proxy=proxy, state=0)
             raise RetryException()
 
-    @retry(retry_if_exception_type(RetryException))
+    @retry(retry=retry_if_exception_type(RetryException))
     async def push(self, url, session, proxy, headers, data):
         try:
             async with session.post(url, headers=headers, data=data) as response:
@@ -361,7 +361,6 @@ class MetroSexual(object):
 if __name__ == "__main__":
 
     phone_num = '4073938013'
-
     msexy = MetroSexual('./pins.txt')
     #msexy.fetch_proxies()
     #msexy.reset_proxies()
