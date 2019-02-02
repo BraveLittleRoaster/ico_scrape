@@ -16,32 +16,32 @@ import logging, coloredlogs
 import sqlite3
 from tenacity import retry, wait_random, retry_if_exception_type
 from aiohttp_socks import SocksConnector, SocksVer
-
 import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # suppress urllib insecure warnings.
 logger = logging.getLogger(__name__)
 coloredlogs.install(level=logging.DEBUG)
+logger.debug("Test debug message.")
 
 
 class RetryException(Exception):
     # Raise this to trigger tenacity to retry.
     pass
 
-
 class MetroSexual(object):
 
     def __init__(self, path):
 
-        logger.debug("Loaded Init.")
+        logger.debug("Init MetroSexual.")
 
         self.api_url = "https://205.216.27.79/api/v1/account/user/authenticate"
         self.login_url = "https://205.216.27.79/my-account/sign-in"
         self.csrf_url = "https://205.216.27.79/common/metropcs_common.js"
 
         self.path = path
-        manager = mp.Manager()
-        self.shared_list = manager.list() # Store times taken for chunks. Lets us get overall average speed
+        #manager = mp.Manager()
+        #self.shared_list = manager.list() # Store times taken for chunks. Lets us get overall average speed
 
         self.headers = {"User-Agent": self.random_ua(),
                         "Host": "www.metropcs.com",
@@ -55,8 +55,7 @@ class MetroSexual(object):
         self.header_c = ''
         self.header_d = '0'
 
-    @staticmethod
-    def random_ua():
+    def random_ua(self):
 
         user_agent_list = [
             # Chrome
