@@ -5,4 +5,4 @@ None of the API keys work anymore.
 
 Oh yeah, also had a MetroPCS PIN # bruter. By feeding the phone number into Twilio, we could find which of these crypto currency tech workers used MetroPCS, then bypass the auth on their account and conduct a port of that number to an alternative SIM if required for engagments. I doubt the MetroPCS bruter works still. 
 
-The IMAP dumper, would just feed in a username/password to an IMAP server and dump the contents of their mailbox. A lot of ICOs had stood up super basic IMAP systems that were vulnerable to interception with password reuse. 
+The IMAP dumper, would just feed in a username/password to an IMAP server and dump the contents of their mailbox. Mostly useful at ye olde ancient and unsecured AOL IMAP servers. 
